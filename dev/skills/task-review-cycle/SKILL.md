@@ -67,6 +67,24 @@ RESULT=$(bash "$SKILL_DIR/scripts/commit-and-push.sh" --no-push --message "${COM
 
 `guard_skipped: true` in `RESULT` means the commit went through unchecked — report it.
 
+**Panel signal** — evaluated on every run, including when `--no-hub`, `--lite` or `--pr` skips
+the size routing below:
+
+```bash
+SKILL_DIR="<absolute parent directory of the loaded SKILL.md>"
+PREFLIGHT=$(bash "$SKILL_DIR/scripts/preflight.sh")
+BASE_BRANCH=$(jq -r '.base_branch' <<<"$PREFLIGHT")
+SCRIPT_HIT=$(git diff "${BASE_BRANCH}...HEAD" --name-only --diff-filter=ACMR \
+  | grep -E '^(dev|prod)/.*\.(sh|py|ps1|cjs)$' | head -1 || true)
+```
+
+`SCRIPT_HIT` non-empty → `--panel` is on, whatever path this run takes. It matches on extension
+because a shipped script is where the panel's non-Claude engines earn their slot — quoting, shell
+expansion, and interpreter-shim defects a prose reviewer has no reason to look for (PR #267). It
+sets no path of its own: a small script edit still merges lite, reviewed by three sources. A
+`.md`, `.json`, `.xml` or `.yaml` edit cannot match, so a skill-doc change does not pull the panel
+in.
+
 **Route by size** (skip when `--no-hub`, `--lite` or `--pr` was passed):
 
 ```bash
@@ -80,8 +98,6 @@ LINE_DELTA=$(( DELTA_TERMS ))
 SECURITY_HIT=$(echo "$CHANGED_FILES" | grep -Ei 'auth|crypto|secret|permission|network|\.env$|/env[./]|/env$|environment|\.github/workflows' | head -1 || true)
 BINARY_HIT=$(git diff "${BASE_BRANCH}...HEAD" --numstat | cut -f1,2 | grep -m1 -e '-' || true)
 MODE_OR_RENAME=$(git diff "${BASE_BRANCH}...HEAD" --summary | grep -E '^ (mode change|rename) ' | head -1 || true)
-SCRIPT_HIT=$(git diff "${BASE_BRANCH}...HEAD" --name-only --diff-filter=ACMR \
-  | grep -E '^(dev|prod)/.*\.(sh|py|ps1|cjs)$' | head -1 || true)
 ```
 
 | Condition | Path |
@@ -89,14 +105,12 @@ SCRIPT_HIT=$(git diff "${BASE_BRANCH}...HEAD" --name-only --diff-filter=ACMR \
 | `1 ≤ LINE_DELTA ≤ 100` and `SECURITY_HIT`, `BINARY_HIT`, `MODE_OR_RENAME` all empty | **lite** — no push, no PR, no CI; Step 6 merges locally |
 | otherwise | **hub** — push and open the PR now |
 | `SECURITY_HIT` non-empty, or `LINE_DELTA ≥ 300` | hub, and `--panel` is on |
-| `SCRIPT_HIT` non-empty | `--panel` is on; the path stays whatever the rows above chose |
+| `SCRIPT_HIT` non-empty (captured above) | `--panel` is on; the path stays whatever the rows above chose |
 
 A zero line delta is unmeasured (binary, mode, rename), not trivial — it routes to hub. Announce
-the chosen path in one line. `SCRIPT_HIT` matches on extension because a shipped script is where
-the panel's non-Claude engines earn their slot — quoting, shell expansion, and interpreter-shim
-defects a prose reviewer has no reason to look for (PR #267). It sets no path of its own: a small
-script edit still merges lite, reviewed by three sources. A `.md`, `.json`, `.xml` or `.yaml` edit
-cannot match, so a skill-doc change does not pull the panel in. Hub path — push and open the PR before any review:
+the chosen path in one line.
+
+Hub path — push and open the PR before any review:
 
 ```bash
 SKILL_DIR="<absolute parent directory of the loaded SKILL.md>"
