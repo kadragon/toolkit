@@ -34,12 +34,16 @@ No row below is a gate. When the threshold above is met, match the job to the ro
 `qa-verifier` never runs on its own output — whoever implemented must not be the one who verifies.
 That constraint holds whenever a verifier runs; it does not by itself mandate spawning one.
 
-**Why the review cycle always spawns one reviewer.** `task-review-cycle` overrides the volume
-half of the gate for exactly one spawn: its reviewer, which runs `code-review` and grades the
-Sprint Contract. What that spawn buys is **independence** — a check by an agent that did not write
-the code — which is a correctness property, not a volume one: a 1-file fix needs it as much as a
-20-file one. `task-next --tree` / `--all` keep a per-worktree `qa-verifier` for the same reason.
-Every other delegation still requires both conditions.
+**Why the review cycle reviews out-of-process.** `task-review-cycle` always runs one reviewer,
+which runs `code-review` and grades the Sprint Contract. What that buys is **independence** — a
+check by something that did not write the code — which is a correctness property, not a volume
+one: a 1-file fix needs it as much as a 20-file one. It is not a subagent: the cycle shells out to
+a headless `claude -p` (`scripts/claude-review.sh`) in the foreground, because the Bash tool
+enforces a timeout while the `Agent` tool does not, and an agent's completion notification can be
+lost (upstream claude-code #49150, #58637, #68117) — which stalled cycles on reviews that had
+already finished. A headless process also carries no session context, so independence is stronger
+there, not weaker. `task-next --tree` / `--all` keep a per-worktree `qa-verifier` for the same
+correctness reason. Every other delegation still requires both conditions.
 
 ## Background Routing (non-blocking)
 
@@ -97,5 +101,6 @@ lists grants `SendMessage` — as a subagent or as a named teammate. It reports 
 output**, which reaches the orchestrator as the Agent tool result (the completion notification for
 a background spawn) — brief it to put the full result in its final response and never finish
 silently, even when the result is empty or the run failed. Brief `SendMessage(to: "main")` only to
-a spawn whose tools actually include it: a bare `Agent` with no `subagent_type` (the review cycle's
-reviewer); never to a role-file agent.
+a spawn whose tools actually include it: a bare `Agent` with no `subagent_type`; never to a
+role-file agent. Do not rely on it as the only channel — a lost notification is a known upstream
+failure, which is why the review cycle returns its findings over a shell boundary instead.

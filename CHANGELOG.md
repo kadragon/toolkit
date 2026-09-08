@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [done] review slot shells out under a Bash timeout; cycle no longer waits on the panel (dev v4.9.9) (2026-09-08)
 - [done] task-review-cycle closes every review slot once its result is in hand (dev v4.9.8) (2026-09-08)
 - [done] review panel auto-enables on a shipped-script edit under dev/ or prod/ (dev v4.9.7) (2026-09-08)
 - [done] memory-guard: GitLab/Google families, narrower sk-, autoMemoryDirectory stores, char-table sync test (dev v4.9.6) (2026-09-08)

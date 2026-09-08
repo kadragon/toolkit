@@ -40,8 +40,9 @@ delegation bar is met — e.g. a backlog batch of independent items.
 
 **Step 4: QA**
 Run the Sprint Contract's lint/test command yourself. Independent verification happens in the
-review cycle (Step 6): its single reviewer grades the diff against the contract, so the agent that
-implemented never certifies its own work. `--tree` / `--all` verify per worktree with `qa-verifier`.
+review cycle (Step 6): its single reviewer — a headless `claude -p` shell-out, not a subagent —
+grades the diff against the contract, so the agent that implemented never certifies its own work.
+Grading is read-only there; running the command stays here, which is why this step exists. `--tree` / `--all` verify per worktree with `qa-verifier`.
 
 **Step 5: Version bump**
 Bump `plugin.json` patch/minor/major per `docs/conventions.md`. Do this AFTER all skill changes, BEFORE committing.
