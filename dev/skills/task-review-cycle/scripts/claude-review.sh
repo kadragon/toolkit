@@ -2,36 +2,52 @@
 # Headless Claude code review against a base branch, invoking a review skill,
 # emitting the findings-JSON array to stdout.
 #
-# Purpose: keep a Claude engine in the review panel even when the runtime
-# driving the cycle is NOT Claude (e.g. Codex). This is the mirror of
-# agy-review.sh / codex-review.sh, which keep those engines in the panel when
-# Claude drives. When Claude itself drives, Step 2-1 uses the in-process Agent
-# tool instead (it inherits the live session model for free); this script is
-# only the non-Claude-driver fallback.
+# Purpose: the Claude review slot, whichever runtime drives the cycle. This is
+# the mirror of agy-review.sh / codex-review.sh. SKILL.md Step 2 calls it in the
+# FOREGROUND under a Bash timeout, which is the whole point: the in-process Agent
+# path this replaced had no timeout of its own, so a hung inner run — or one that
+# finished while its completion notification was lost (upstream claude-code
+# #49150, #58637, #68117) — stalled the cycle with no bound. A headless run also
+# carries no session context, making it a stricter independent check than an
+# in-process spawn, not a weaker one.
 #
 # Requires the `claude` CLI to be installed AND authenticated in the caller's
 # environment. If it is not, the caller records "Reviewers Skipped".
 #
-# Usage: claude-review.sh <base_branch> [effort]
-#   The review skill is fixed to "code-review" — SKILL.md Step 2-1 pins the
-#   Claude slot to exactly one skill, so there is no slot argument. The optional
-#   effort arg mirrors that step's escalation: the caller passes "high" when its
-#   SECURITY_HIT capture is non-empty, and nothing otherwise.
-# Output: JSON array of findings on stdout — same contract as the 2-1 Agent
-#         path, so Step 3 consolidation treats both identically.
+# Usage: claude-review.sh <base_branch> [effort] [sprint_contract]
+#   The review skill is fixed to "code-review" — SKILL.md Step 2 pins the Claude
+#   slot to exactly one skill, so there is no slot argument. The optional effort
+#   arg mirrors that step's escalation: the caller passes "high" when its
+#   SECURITY_HIT capture is non-empty, and nothing otherwise. The optional third
+#   arg is the Sprint Contract; when non-empty the run also grades the diff
+#   against it, which keeps that grading independent of the agent that wrote the
+#   code. Grading is read-only judgment only — running the contract's lint/test
+#   command stays with the orchestrator, both because --permission-mode plan
+#   forbids it here and because that half is already the orchestrator's job.
+# Output: JSON array of findings on stdout — the contract Step 3 consolidation
+#         consumes, with contract findings tagged "source":"contract".
 
 set -euo pipefail
 
-BASE_BRANCH="${1:?Usage: claude-review.sh <base_branch> [effort]}"
+BASE_BRANCH="${1:?Usage: claude-review.sh <base_branch> [effort] [sprint_contract]}"
 SLOT_ID="code-review"
 EFFORT="${2:-}"
+CONTRACT="${3:-}"
 
 command -v claude >/dev/null 2>&1 || { echo "ERROR: claude CLI not found" >&2; exit 1; }
 
-# Mirrors SKILL.md Step 2-1's reviewer prompt — keep the two in sync. The strict
+# SKILL.md Step 2 delegates the whole reviewer prompt to this script, so this
+# block is its only copy — there is no second prompt to keep in sync. The strict
 # "JSON array and NOTHING else" instruction is what lets .result be parsed
 # directly as the findings array.
-PROMPT=$(cat <<EOF
+# Read the heredoc straight into the variable rather than through
+# PROMPT=$(cat <<EOF ...). Inside a command substitution, bash 3.2 does not treat
+# heredoc content as literal: it scans the body for quotes, so the apostrophes
+# below (run's, branch's) opened a quote that swallowed the rest of the file. The
+# script then died at exit 127 running its own comments as commands — on macOS
+# only, since bash 5 parses it correctly and CI runs Linux. read -d '' takes the
+# body verbatim and returns non-zero at EOF, hence the || true under set -e.
+IFS= read -r -d '' PROMPT <<EOF || true
 Review changes on the current branch against ${BASE_BRANCH}.
 1. git diff ${BASE_BRANCH}...HEAD --name-only
 2. Invoke Skill "${SLOT_ID}" with args "${EFFORT}" to review — the skill name is exactly \`${SLOT_ID}\`; the effort goes in the args field, never in the name. Empty args = default effort. Do not invoke any other review skill or command.
@@ -44,7 +60,34 @@ Only flag issues introduced or made significantly worse by this branch's diff.
 Do NOT flag: pre-existing issues, linter-owned style, generated/vendored files, speculative concerns, >5 style nits.
 If there are no findings, return [].
 EOF
-)
+
+# The heredoc above is UNQUOTED, so it expands dollar signs and backticks. A
+# Sprint Contract is caller-supplied text that legitimately carries both: a
+# lint/test command, or a shell snippet inside an acceptance criterion. Appending
+# it into that heredoc would therefore run command substitution taken from the
+# contract, in this shell. Concatenate by parameter expansion instead, which
+# substitutes the value and never re-parses it.
+#
+# Keep backticks, command-substitution punctuation and apostrophes out of the
+# block below and out of this comment. Once the heredoc body above contains
+# backticks, bash 3.2 mis-tracks quoting across the rest of the file and rejects
+# it outright, while bash 5 on the CI runner accepts it — so this breaks on macOS
+# where CI stays green. test_claude_review.py runs `bash -n` to catch it.
+if [ -n "$CONTRACT" ]; then
+  PROMPT="${PROMPT}
+
+Then grade the diff against the Sprint Contract below. A criterion you can settle by reading the
+diff, and that the diff does not meet, is a finding: severity P0, \"source\":\"contract\". Hunt for
+ways the change fails such a criterion; record a pass only on evidence. A criterion that can only
+be settled by RUNNING something is different: grade it against the \"Lint/test evidence\" line in
+the contract when one is present, and otherwise leave it alone. Never report a criterion as unmet
+merely because this session could not run it — that would block every merge. Append contract
+findings to the SAME JSON array as the ${SLOT_ID} findings. Do NOT run the lint/test command named
+in the contract — this session is read-only, and the orchestrator runs that command itself.
+
+Sprint Contract:
+${CONTRACT}"
+fi
 
 # --permission-mode plan makes the headless session structurally read-only: it
 # can still read the diff and files (git diff, Read) but cannot Edit/Write or
@@ -52,11 +95,15 @@ EOF
 # headless session that misreads its task (or trips the target repo's hooks) can
 # create/modify files instead of just reporting findings.
 #
-# Do NOT pass --model: under a non-Claude driver there is no live session to
-# inherit, so the CLI's configured default model is the intended choice.
+# Do NOT pass --model: a headless run has no live session to inherit from, so
+# the CLI's configured default model is the intended choice.
+#
+# stdin comes from a pipe under an agent Bash tool, where the CLI waits 3s for
+# data that never arrives and warns on stderr. Redirect it: the prompt is an
+# argument, so there is nothing to read.
 RAW=""
 status=0
-RAW=$(claude -p --permission-mode plan --output-format json "$PROMPT") || status=$?
+RAW=$(claude -p --permission-mode plan --output-format json "$PROMPT" </dev/null) || status=$?
 if [ "$status" -ne 0 ]; then
   printf '%s\n' "${RAW:-claude CLI exited $status with no stdout}" >&2
   exit "$status"
@@ -76,7 +123,7 @@ emit_if_array() { jq -e 'type == "array"' <<<"$1" >/dev/null 2>&1 && { printf '%
 # model answers before re-emitting JSON) — recover the outermost [...] block and
 # revalidate. Only if BOTH fail do we surface the raw text and report the slot as
 # unavailable: an unread run is a dead slot, and `[]` would consolidate as a clean
-# Claude review — the failure mode SKILL.md Step 2-1's sentinel rule exists to stop.
+# Claude review — the failure mode the sentinel rule in SKILL.md Step 2 exists to stop.
 if emit_if_array "$RESULT"; then
   exit 0
 fi

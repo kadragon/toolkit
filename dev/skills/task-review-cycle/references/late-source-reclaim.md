@@ -1,23 +1,23 @@
 # Late Review-Source Reclaim
 
-A panel source that breaches its 1200s wait is recorded as skipped and the cycle proceeds — but
-the process does not stop, and its findings can still be real. This is the step that collects
-them before the merge closes the window.
+A panel source that has not reported by the time the reviewer returns is recorded as skipped and
+the cycle proceeds — but the process does not stop, and its findings can still be real. This is
+the step that collects them before the merge closes the window.
 
 **Only `codex-review.sh` persists a result, so only the codex panel source is reclaimable.** The
-reviewer slot, `claude-review.sh` and `agy-review.sh` write no sidecar, and a codex run that
-exits 75 (another cycle holds the workspace lock) never started one either. For those, a breach
-means the inline fallback stands — there is nothing on disk to come back for.
+reviewer slot (`claude-review.sh`) and `agy-review.sh` write no sidecar, and a codex run that
+exits 75 (another cycle holds the workspace lock) never started one either. For those, a source
+that never reported leaves nothing on disk to come back for — the inline fallback stands.
 
-## Why the breach is structural, not a tail
+## Why a late return is structural, not a tail
 
-`agy-review.sh` caps itself (`--print-timeout 15m`) so it fails reportably under the
-orchestrator's wait. `codex-review.sh` has no internal deadline: its only bound is the caller's
-1200s `run_in_background` wait, which stops the *cycle* listening but never stops the *run*. So a
-late codex return is the expected shape, not an anomaly — three consecutive cycles (PR #260, #263,
-#264) breached, and #260's late output named two real defects that had to land in a follow-up PR
-after the merge. Do not "fix" this by killing the run at a deadline: that discards exactly the
-findings this step exists to recover.
+`agy-review.sh` caps itself (`--print-timeout 15m`) and so fails reportably on its own.
+`codex-review.sh` has no internal deadline, and the cycle no longer waits on either: it moves on
+as soon as the reviewer's array is in hand, which stops the *cycle* listening but never stops the
+*run*. So a late codex return is the expected shape, not an anomaly — three consecutive cycles
+(PR #260, #263, #264) returned late, and #260's late output named two real defects that had to
+land in a follow-up PR after the merge. Do not "fix" this by killing the run at a deadline: that
+discards exactly the findings this step exists to recover.
 
 ## Where a late result lands
 
@@ -43,14 +43,14 @@ that fails either check belongs to a different run: leave it alone.
 
 `timings.log` in the same directory gets one line per run —
 `<iso8601> elapsed=<N>s mode=<...> status=<...> files=<N> lines=<N> branch=<raw branch>`. It is the
-evidence for any future argument about the cap: elapsed alone cannot separate "the companion is
-reliably slower than 1200s" from "that diff was unusual", so diff size is recorded beside it.
-Change the cap against this log, not against a single cycle's impression.
+evidence for any future argument about how much runway the companion needs: elapsed alone cannot
+separate "the companion is reliably slower than the cycle" from "that diff was unusual", so diff
+size is recorded beside it. Argue from this log, not from a single cycle's impression.
 
 ## Pre-merge reclaim
 
 Run this **immediately before the merge command**, when the codex panel source was recorded as
-`Reviewers Skipped` for a breach or a failure this cycle. On the hub path that means *after*
+`Reviewers Skipped` this cycle — still running, or failed. On the hub path that means *after*
 `ci-wait.sh` returns green — the CI wait is free runway for a slow companion, so reclaiming
 earlier throws it away.
 

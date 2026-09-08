@@ -66,8 +66,10 @@ List findings ordered by priority (P0 first). After all findings, add:
 - **Overall verdict**: \"LGTM\" if no P0/P1 issues, or \"Changes Requested\" with a 1-sentence explanation.
 - If no issues worth flagging exist, say so plainly — do not invent findings."
 
-# The orchestrator enforces a 1200s timeout via run_in_background; keep --print-timeout
-# 300s under that so agy fails with a reportable reason instead of being cut off.
+# --print-timeout is agy's ONLY deadline. Nothing outside this script bounds it: the cycle
+# launches it in the background and moves on without waiting (SKILL.md Step 2), and
+# run_in_background enforces no timeout of its own. Keep the cap here so a slow run fails
+# with a reportable reason instead of running on with no result anyone reads.
 # Capture stdout and stderr separately so we can detect empty output and report
 # the failure reason (Windows: agy exits non-zero before producing output, which
 # set -euo pipefail would otherwise swallow silently).

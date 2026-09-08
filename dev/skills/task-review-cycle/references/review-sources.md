@@ -1,26 +1,19 @@
-# Review Sources Other Than the Agent Slot
+# Panel Review Sources
 
-## Non-Claude engine fallback
-
-When `NATIVE_ENGINE` is not `claude` (a non-Claude runtime is driving), shell out instead so a
-Claude engine still reviews; skip the slot with `Reviewers Skipped: claude CLI unavailable` when
-`CLAUDE_CLI_AVAILABLE` is `false`:
-
-```bash
-SKILL_DIR="<absolute parent directory of the loaded SKILL.md>"
-[[ -f "$SKILL_DIR/scripts/claude-review.sh" ]] || { echo "Bundled claude-review unavailable: $SKILL_DIR/scripts/claude-review.sh" >&2; exit 1; }
-PREFLIGHT=$(bash "$SKILL_DIR/scripts/preflight.sh")
-BASE_BRANCH=$(jq -r '.base_branch' <<<"$PREFLIGHT")
-EFFORT="<high when SECURITY_HIT is non-empty, else empty>"
-bash "$SKILL_DIR/scripts/claude-review.sh" "${BASE_BRANCH}" "${EFFORT}" \
-  || echo '{"code_review_slot":"inner-run-unavailable","detail":"claude-review.sh exited non-zero"}'
-```
+The non-Claude engines. The Claude slot itself is not here: SKILL.md Step 2 calls
+`scripts/claude-review.sh` in the foreground, the same way for every runtime, so there is no
+engine-dependent branch left to document.
 
 ## Panel source launch
 
-The `--panel` sources, launched in the same turn as the reviewer, each `run_in_background: true`
-with a 1200s wait. A source that fails or breaches is recorded as `Reviewers Skipped: <reason>`
-and the cycle proceeds on the rest.
+Launch the `--panel` sources in the turn **before** the reviewer call, `run_in_background: true`,
+so they run while the reviewer holds the foreground for up to its 600s.
+
+**The cycle never waits on them.** When the reviewer's array is in hand, whichever sources have
+reported are consolidated and each one that has not is recorded as
+`Reviewers Skipped: still running`; Step 3 begins there. A source that failed or exited 75 is
+recorded with that reason instead. Nothing here is ever stopped — see SKILL.md Step 2 and
+`late-source-reclaim.md`, which is what makes not waiting safe for codex.
 
 Launch agy and codex as **two separate background tasks**, one block each. A single task id
 cannot serve both: stopping it to close a breached agy would kill the codex child mid-run, and
@@ -57,5 +50,5 @@ fi
 ```
 
 `codex_status` 75 is the workspace lock held by another cycle: skipped, not failed. Only
-`codex-review.sh` persists a result; a breached run is reclaimed before merge per
-`late-source-reclaim.md`.
+`codex-review.sh` persists a result; a run still going when the cycle moves on is reclaimed before
+merge per `late-source-reclaim.md`.

@@ -40,7 +40,7 @@ fi
 # --- Keep local base branch current so downstream `git diff base...HEAD` isn't scoped against a
 # --- stale ref (picks up already-merged commits otherwise). Only fast-forward: skip if it's
 # --- checked out, has diverged, or fetch fails. Called on the live path AND on a cache hit —
-# --- the base can move while a 1200s review panel waits, so this cannot be a first-run-only
+# --- the base can move while a background review panel runs, so this cannot be a first-run-only
 # --- side effect.
 sync_base_branch() {
   local base="$1" feature="$2"
@@ -139,9 +139,9 @@ fi
 # CLAUDECODE is set only when Claude Code is the driver; it does NOT leak into
 # Codex sessions. (The inverse test is unreliable: the codex plugin sets
 # CODEX_COMPANION_SESSION_ID even under Claude Code, so only the positive Claude
-# test can be trusted.) Step 2-1 uses this: driver is Claude → in-process Agent
-# (inherits the live session model); otherwise → `claude` CLI companion, so the
-# review panel keeps a Claude engine no matter which runtime drives the cycle.
+# test can be trusted.) Nothing branches the review slot on this any more:
+# SKILL.md Step 2 shells out to claude-review.sh for every runtime, and reads
+# claude_cli_available alone to decide whether that slot can run.
 NATIVE_ENGINE="other"
 [ -n "${CLAUDECODE:-}" ] && NATIVE_ENGINE="claude"
 CLAUDE_CLI_AVAILABLE=false

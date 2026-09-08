@@ -82,6 +82,33 @@ reads arithmetic contexts (`$(( ... ))`, `(( ... ))`) where a variable carries n
 earlier block in the message when that is where the only capture lives. Before it did, a
 `task-review-cycle` block reading an unset cross-block variable passed CI (PR #240).
 
+### Capturing free text: quoted heredoc, never an interpolated assignment
+
+A skill snippet that tells the orchestrator to paste text it composed — a Sprint Contract, a
+commit message, a review note — into a double-quoted assignment is a shell injection, because the
+orchestrator's own shell expands that text before any script sees it:
+
+```bash
+# WRONG — backticks and $(...) in the pasted text run here, and the text is silently mangled
+CONTRACT="<the Sprint Contract verbatim>"
+
+# CORRECT — a quoted delimiter blocks every expansion; still a var=$(cmd) capture
+CONTRACT=$(cat <<'SPRINT_CONTRACT'
+<the Sprint Contract verbatim, raw>
+SPRINT_CONTRACT
+)
+```
+
+Not hypothetical: this repo's own text carries both. Sprint Contracts quote commands in backticks
+(`` `pytest -q` ``), and commit subjects do too (`[HARNESS] drift linter fails on `2a.`-style
+ordered-list markers`). PR #272 reproduced the wrong form executing two `touch` commands out of a
+contract and dropping the backticked criteria from the variable; a `"` in the text breaks the block
+outright instead, so the snippet's own `|| echo '{...}'` fallback never runs. Quoting the delimiter
+also stops bash 3.2 mis-scanning the body (see *Rewriting a Shipped One-Liner: Two Traps*).
+
+The same rule is why `harness-capture` hands `session_notes.py` and `memory-guard` a **file**
+rather than a command line: note text quotes what happened, and what happened contains `$(...)`.
+
 ### No heredoc inside an indented snippet
 
 A fenced block nested in a Markdown list item carries the list's indentation, and an indented terminator never closes `<<'EOF'` — the heredoc swallows the rest of the input, and Python bodies pick up a leading indent that is a top-level `IndentationError`. `<<-` does not save it: that strips tabs only, and stripping the body's indent is what breaks the Python. Inside a list item use `python3 -c '...'` (or move the fence to column 0). Top-level snippets may use heredocs freely — the terminator sits at column 0 there.

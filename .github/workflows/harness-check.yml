@@ -172,6 +172,11 @@ jobs:
       - name: Run dev/skills/task-review-cycle/scripts/test_codex_review.py
         run: python3 dev/skills/task-review-cycle/scripts/test_codex_review.py
 
+      # Guards the Sprint Contract argument against shell injection, and the prompt
+      # assembly against the bash 3.2 heredoc trap that CI's bash 5 cannot reproduce.
+      - name: Run dev/skills/task-review-cycle/scripts/test_claude_review.py
+        run: python3 dev/skills/task-review-cycle/scripts/test_claude_review.py
+
   task-nodes-test:
     name: task_nodes.py regression test
     runs-on: ubuntu-latest
