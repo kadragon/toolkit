@@ -160,18 +160,21 @@ SECRET_PATTERNS = (
     ("Slack token", re.compile(r"\b(?:xox[baprs]|xapp)-[A-Za-z0-9-]{10,}\b")),
     ("npm token", re.compile(r"\bnpm_[A-Za-z0-9]{36,}\b")),
     ("Anthropic API key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
-    ("GitLab personal access token", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")),
+    # Alphanumeric tail, no hyphens: a GitLab PAT carries none, and accepting them would
+    # reproduce here the very false positive the provider family below was rewritten to lose.
+    ("GitLab personal access token", re.compile(r"\bglpat-[A-Za-z0-9]{20,}\b")),
     # Fixed length, not a floor: a Google API key is `AIza` plus exactly 35 characters, so
-    # pinning the count is both tighter than a floor and all the shape there is.
-    ("Google API key", re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b")),
-    # Two shapes, deliberately split. A hyphen-bearing tail is accepted only behind a known
-    # OpenAI sub-prefix; the legacy shape carries none, so it is matched alphanumeric-only.
-    # One pattern spanning both (`sk-[A-Za-z0-9_-]{20,}`) matched hyphenated prose —
-    # `sk-8ball-review-checklist-for-the-team-2026` tripped the gate, and a denial costs the
-    # author a rewrite. Split this way that string breaks at its first hyphen, five
-    # characters in, while `sk-proj-…` and `sk-svcacct-…` keys stay matched.
-    ("provider API key", re.compile(r"\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}\b")),
-    ("provider API key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+    # pinning the count is both tighter than a floor and all the shape there is. The tail
+    # terminator is a lookahead rather than `\b`, because these keys are base64url: roughly
+    # one in 64 ends in `-`, and `\b` cannot follow a non-word character.
+    ("Google API key", re.compile(r"\bAIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])")),
+    # The tail may carry hyphens, but it must contain one unbroken run of 20+ alphanumerics.
+    # That single condition separates the two cases a flat `sk-[A-Za-z0-9_-]{20,}` conflated:
+    # every real key has such a run (`sk-…`, `sk-proj-…`, `sk-svcacct-…`, `sk-or-v1-…`,
+    # `sk-None-…`), while hyphenated prose has none — `sk-8ball-review-checklist-for-the-team-2026`
+    # tripped the gate, and a denial costs the author a rewrite. Enumerating known
+    # sub-prefixes instead would have dropped every vendor shape not on the list.
+    ("provider API key", re.compile(r"\bsk-[A-Za-z0-9_-]*[A-Za-z0-9]{20,}\b")),
     ("PEM private key header", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
 )
 
@@ -189,9 +192,14 @@ SETTINGS_FILES = (
 def _configured_memory_dirs(cwd: str | None = None) -> tuple[str, ...]:
     """Absolute directories named by `autoMemoryDirectory` in any settings file we can read.
 
-    A union, not a precedence chain. Reimplementing Claude Code's settings precedence would
-    put a second, drifting copy of that rule here; over-including a directory only widens
-    what a hygiene gate inspects, which is the safe direction to be wrong in.
+    A union, not a precedence chain: reimplementing Claude Code's settings precedence would
+    put a second, drifting copy of that rule here. The union is not free, though, and the
+    cost is worth naming — what this widens is a *blocking* gate, not a passive inspection.
+    A `.md` under one of these directories is graded on the body-size cap and the status
+    value, so a checked-in project settings file naming a stale or broad directory that user
+    precedence would have overridden can deny ordinary markdown writes there. `_too_broad`
+    refuses the shapes where that would be catastrophic rather than merely wrong; a
+    misconfigured-but-plausible directory is accepted, and the denial says what fired.
 
     This is the only place the hook path touches the filesystem, so it swallows every error
     and returns what it has: an unreadable or malformed settings file must leave the
@@ -210,11 +218,27 @@ def _configured_memory_dirs(cwd: str | None = None) -> tuple[str, ...]:
                 resolved = os.path.abspath(
                     os.path.expanduser(os.path.expandvars(value.strip()))
                 )
-                if resolved not in dirs:
+                if resolved not in dirs and not _too_broad(resolved):
                     dirs.append(resolved)
         except Exception:
             continue
     return tuple(dirs)
+
+
+def _too_broad(directory: str) -> bool:
+    """True for a configured directory that would put most of a filesystem under the gate.
+
+    A filesystem root, the user's home itself, or the cwd — the shapes a `.` or `~` in a
+    settings file expands to. Nobody relocates an auto-memory store to one of these, so
+    reading such a value as a store is always a misconfiguration, and honouring it would
+    deny every markdown write on the machine over a size cap meant for one-fact notes.
+    """
+    resolved = os.path.abspath(directory)
+    return resolved in (
+        os.path.abspath(os.sep),
+        os.path.abspath(os.path.expanduser("~")),
+        os.path.abspath(os.getcwd()),
+    )
 
 
 def _under(path: str, directory: str) -> bool:
@@ -262,13 +286,8 @@ def _is_index_file(path: str) -> bool:
 
 
 def _scan_secrets(text: str) -> list[str]:
-    """Findings for known credential shapes. The matched value is never echoed back.
-
-    Deduplicated by label: one family may carry more than one pattern (the provider key's
-    prefixed and legacy shapes), and a text tripping both should read as one finding.
-    """
-    findings = [f"{label} detected" for label, pat in SECRET_PATTERNS if pat.search(text)]
-    return list(dict.fromkeys(findings))
+    """Findings for known credential shapes. The matched value is never echoed back."""
+    return [f"{label} detected" for label, pat in SECRET_PATTERNS if pat.search(text)]
 
 
 def _scan_chars(text: str) -> list[str]:
@@ -641,6 +660,14 @@ def _test() -> None:
            os.path.join(os.path.expanduser("~"), "relocated-memory")
            in _configured_memory_dirs(proj))
 
+        # A settings file naming a directory this broad is a misconfiguration, and honouring
+        # it would put every markdown file under it behind a one-fact size cap.
+        for broad in ("~", ".", os.sep):
+            with open(settings, "w", encoding="utf-8") as fh:
+                _json.dump({"autoMemoryDirectory": broad}, fh)
+            ok(f"an over-broad store ({broad!r}) is refused",
+               os.path.abspath(os.path.expanduser(broad)) not in _configured_memory_dirs(proj))
+
         # End to end through the hook: the same secret, in a relocated store, with and
         # without the setting that puts that store in scope.
         with open(settings, "w", encoding="utf-8") as fh:
@@ -679,11 +706,14 @@ def _test() -> None:
     # enough to clear the floor, whose every hyphen-free run is far too short to be a key.
     ok("hyphenated sk- prose is not a secret",
        not _scan_secrets("see sk-8ball-review-checklist-for-the-team-2026 in the notes"))
-    ok("hyphenated glpat- prose is not a secret",
+    ok("prose naming the glpat- prefix is not a secret",
        not _scan_secrets("the glpat- prefix marks a GitLab token"))
     ok("AIza short of its exact length is not a secret", not _scan_secrets("AIza" + "j" * 20))
-    ok("one provider finding when both shapes could fire",
-       _scan_secrets("sk-proj-" + "g" * 40).count("provider API key detected") == 1)
+    ok("hyphenated glpat- prose stays clean at prose length",
+       not _scan_secrets("see glpat-rotation-policy-for-the-team-2026 in the notes"))
+    ok("a Google key ending in `-` is still a secret", bool(_scan_secrets("AIza" + "j" * 34 + "-")))
+    ok("a vendor sk- shape outside the known sub-prefixes is still a secret",
+       bool(_scan_secrets("sk-or-v1-" + "k" * 64)) and bool(_scan_secrets("sk-None-" + "m" * 40)))
 
     # --- characters ---
     ok("bidi override rejected", bool(_scan_chars("a\u202eb")))
