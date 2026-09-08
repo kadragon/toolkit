@@ -188,7 +188,19 @@ elif [ "$codex_status" -ne 0 ]; then
 fi
 ```
 
-Wait for every launched source before Step 3. A breached codex source leaves its result on disk — `references/late-source-reclaim.md` reclaims it before merge; no other source persists one.
+**Close every slot before Step 3.** Wait for every launched source, then stop it — load
+`TaskStop` with `ToolSearch` `select:TaskStop`. A slot left open is re-prompted on the next wake
+and re-runs its inner `/code-review`, returning the same findings at full token cost, and keeps
+reporting `running` in `ListAgents` long after its last turn (4.9.7 cycle).
+
+| Slot state | Action |
+|------------|--------|
+| Result in hand — by `SendMessage`, the agent's final output, stdout, or the `inner-run-unavailable` sentinel | `TaskStop` it; the channel that delivered does not matter |
+| Breached with nothing delivered — reviewer slot, `claude-review.sh`, `agy-review.sh` | `TaskStop` it: they persist nothing, the inline fallback already stands, and a re-prompt only re-runs the review |
+| Breached codex panel source | **Never stop it.** Its late result on disk is what `references/late-source-reclaim.md` reclaims before merge; no other source persists one |
+
+Never poll a slot with a `sleep` shell — a finished background task notifies on its own, and the
+sleeps outlive the agent (nine were orphaned on the 4.9.7 cycle).
 
 ## Step 3: Consolidate and confirm
 
@@ -259,7 +271,7 @@ bash "$SKILL_DIR/scripts/merge-and-cleanup.sh" <PR_NUMBER> <BASE_BRANCH> <FEATUR
 | Bundled script unresolvable, or preflight `has_errors` | Stop, report |
 | Commit rejected by commit-guard (`{"error": "commit blocked…"}`) | Fix the branch or the `[TYPE]`; never retry the same call |
 | Guard crashed (traceback) or `guard_skipped: true` | Treat as unchecked — report; fix `guard.py`, do not work around it |
-| Reviewer sentinel or >1200s | Inline review, note it in the report (this slot persists nothing) |
+| Reviewer sentinel or >1200s | `TaskStop` the slot, review inline, note it in the report (this slot persists nothing) |
 | Panel source fails, exits 75, or >1200s | Record `Reviewers Skipped: <reason>`, proceed; codex breach or failure → reclaim before merge |
 | Contract finding still open after the one retry | Stop; no Step 5, no merge |
 | CI `rework-cap` / `timeout` / `checks-never-registered` | Stop, ask the user |
