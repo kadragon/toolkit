@@ -22,8 +22,8 @@ This skill is a callable primitive. Before Setup, look for `--from <caller>` in 
 - `--auto` — skip the Step 3 confirmation; apply every in-scope finding.
 - `--no-hub` — commit locally, review, apply, stop. No push, PR, CI, or merge.
 - `--lite` / `--pr` — force the merge path. Without either, Step 1 routes by diff size (below).
-- `--panel` — add the agy and Codex engines to the reviewer. Auto-enabled on a security hit or a
-  diff of 300+ lines.
+- `--panel` — add the agy and Codex engines to the reviewer. Auto-enabled on a security hit, a
+  diff of 300+ lines, or a diff that adds or changes a shipped script under `dev/`/`prod/`.
 
 **Sprint Contract.** The caller restates it verbatim in the invocation (Tag / Scope / Acceptance
 criteria / Out of scope / Lint-test command); the reviewer grades against it. None restated → the
@@ -67,6 +67,24 @@ RESULT=$(bash "$SKILL_DIR/scripts/commit-and-push.sh" --no-push --message "${COM
 
 `guard_skipped: true` in `RESULT` means the commit went through unchecked — report it.
 
+**Panel signal** — evaluated on every run, including when `--no-hub`, `--lite` or `--pr` skips
+the size routing below:
+
+```bash
+SKILL_DIR="<absolute parent directory of the loaded SKILL.md>"
+PREFLIGHT=$(bash "$SKILL_DIR/scripts/preflight.sh")
+BASE_BRANCH=$(jq -r '.base_branch' <<<"$PREFLIGHT")
+SCRIPT_HIT=$(git diff "${BASE_BRANCH}...HEAD" --name-only --diff-filter=ACMR \
+  | grep -E '^(dev|prod)/.*\.(sh|py|ps1|cjs)$' | head -1 || true)
+```
+
+`SCRIPT_HIT` non-empty → `--panel` is on, whatever path this run takes. It matches on extension
+because a shipped script is where the panel's non-Claude engines earn their slot — quoting, shell
+expansion, and interpreter-shim defects a prose reviewer has no reason to look for (PR #267). It
+sets no path of its own: a small script edit still merges lite, reviewed by three sources. A
+`.md`, `.json`, `.xml` or `.yaml` edit cannot match, so a skill-doc change does not pull the panel
+in.
+
 **Route by size** (skip when `--no-hub`, `--lite` or `--pr` was passed):
 
 ```bash
@@ -87,9 +105,12 @@ MODE_OR_RENAME=$(git diff "${BASE_BRANCH}...HEAD" --summary | grep -E '^ (mode c
 | `1 ≤ LINE_DELTA ≤ 100` and `SECURITY_HIT`, `BINARY_HIT`, `MODE_OR_RENAME` all empty | **lite** — no push, no PR, no CI; Step 6 merges locally |
 | otherwise | **hub** — push and open the PR now |
 | `SECURITY_HIT` non-empty, or `LINE_DELTA ≥ 300` | hub, and `--panel` is on |
+| `SCRIPT_HIT` non-empty (captured above) | `--panel` is on; the path stays whatever the rows above chose |
 
 A zero line delta is unmeasured (binary, mode, rename), not trivial — it routes to hub. Announce
-the chosen path in one line. Hub path — push and open the PR before any review:
+the chosen path in one line.
+
+Hub path — push and open the PR before any review:
 
 ```bash
 SKILL_DIR="<absolute parent directory of the loaded SKILL.md>"

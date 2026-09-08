@@ -20,10 +20,6 @@ Re-filing requires evidence of the specific kind each item failed on, not a rest
 
 ## Review Backlog
 
-### PR #267 — review-panel routing follow-up
-
-- [ ] [HARNESS] Consider keeping `--panel` on for any diff that adds or changes a *shipped script* under `dev/`/`prod/`, not only at the 300-line / security-path thresholds `task-review-cycle` routes on today. Recorded on PR #267: the three review sources converged on the one obvious defect (an unlocked read-modify-write in `flush()`) but the third source was the only one to find a shell-expansion path — note text passed as `--field "$(...)"` is expanded before the script sees it — and a missing `python3`-shim fallback that `docs/platform-specs.md` already mandates. Both are script-shaped defects a prose-diff reviewer has no reason to look for. Needs a threshold that does not turn the panel on for every skill-doc edit
-
 ### PR #254 — memory-guard follow-ups
 
 - [ ] [FEAT] Gate shell-based memory writes in `memory-guard` — the hook matches `Write|Edit` only, so `printf ... > ~/.claude/projects/<slug>/memory/note.md` writes ungated; `commit-guard`'s PreToolUse(Bash) static command analysis is the precedent to follow *(deferred: no shell-path memory write has been observed; the other four PR #254 follow-ups shipped without it in PR for 4.9.6 — revisit against a recorded case)*
