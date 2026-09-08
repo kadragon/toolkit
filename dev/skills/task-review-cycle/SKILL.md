@@ -41,7 +41,6 @@ SKILL_DIR="<absolute parent directory of the loaded SKILL.md>"
 PREFLIGHT=$(bash "$SKILL_DIR/scripts/preflight.sh")   # append --no-hub when that flag is set
 BASE_BRANCH=$(jq -r '.base_branch' <<<"$PREFLIGHT")
 FEATURE_BRANCH=$(jq -r '.feature_branch' <<<"$PREFLIGHT")
-NATIVE_ENGINE=$(jq -r '.native_engine' <<<"$PREFLIGHT")
 CLAUDE_CLI_AVAILABLE=$(jq -r '.claude_cli_available' <<<"$PREFLIGHT")
 MERGE_STRATEGY=$(jq -c '.merge_strategy' <<<"$PREFLIGHT")
 ```
@@ -127,8 +126,10 @@ The script is idempotent: the local commit from above is reused. If `pr_number` 
 ## Step 2: Review
 
 **One reviewer, always — a foreground shell-out, never a spawned agent.** `SECURITY_HIT`
-non-empty → `EFFORT="high"`, else empty. `CONTRACT` is the caller's Sprint Contract verbatim, or
-empty when none was restated. Call the Bash tool with `timeout: 600000`:
+non-empty → `EFFORT="high"`, else empty. Run the contract's lint/test command yourself first; its
+outcome is the evidence the read-only reviewer cannot gather. Capture the contract with a
+**quoted** heredoc delimiter — interpolating it runs the backticks and `$(...)` a contract carries
+(a `"` breaks the block outright), and quoting also stops bash 3.2 mis-scanning it. Bash `timeout: 600000`:
 
 ```bash
 SKILL_DIR="<absolute parent directory of the loaded SKILL.md>"
@@ -136,41 +137,38 @@ SKILL_DIR="<absolute parent directory of the loaded SKILL.md>"
 PREFLIGHT=$(bash "$SKILL_DIR/scripts/preflight.sh")
 BASE_BRANCH=$(jq -r '.base_branch' <<<"$PREFLIGHT")
 EFFORT="<high when SECURITY_HIT is non-empty, else empty>"
-CONTRACT="<the Sprint Contract verbatim, or empty>"
+CONTRACT=$(cat <<'SPRINT_CONTRACT'
+<Sprint Contract verbatim and raw, then one line "Lint/test evidence: <command> exited <code>";
+ leave this body empty when the caller restated no contract>
+SPRINT_CONTRACT
+)
 bash "$SKILL_DIR/scripts/claude-review.sh" "${BASE_BRANCH}" "${EFFORT}" "${CONTRACT}" \
   || echo '{"code_review_slot":"inner-run-unavailable","detail":"claude-review.sh exited non-zero"}'
 ```
 
-The script runs `code-review` and grades the contract in one read-only pass, and prints the
-findings array on stdout. **Do not run the contract's lint/test command there** — that session is
-`--permission-mode plan`, and running it is already the orchestrator's job (Step 4, and
-`docs/workflows.md` Step 4). Grading the diff against the criteria still happens inside the
-script, so the agent that wrote the code never certifies it.
+It runs `code-review` and grades the contract in one read-only pass, printing the findings array
+on stdout. It never runs the lint/test command (`--permission-mode plan`); it grades an
+execution-based criterion against the evidence line above, and stays silent on one when that line
+is absent rather than failing it for want of a run. Grading happens outside this session, so the
+agent that wrote the code never certifies it. Bash enforces `timeout` where the `Agent` tool has
+none, and an agent's completion notification can be lost (upstream claude-code #49150, #58637,
+#68117) — which is how this cycle used to sit forever on a review that had already finished. Same
+shape as `hamelsmu/claude-review-loop` and `ktaletsk/council`.
 
-Why a shell-out and not an `Agent`: the Bash tool enforces `timeout`, so the slot cannot outlast
-its bound. The `Agent` tool takes no timeout, and its completion notification is not reliable —
-a finished agent can keep reporting `running` (upstream claude-code #49150, #58637, #68117), which
-is how this cycle used to sit forever on a review that had already ended. A headless `claude -p`
-carries no session context, so it is a stricter independent check than an in-process spawn, not a
-weaker one. Same shape as `hamelsmu/claude-review-loop` and `ktaletsk/council`, which both return
-a review over a shell boundary rather than an agent handle.
-
-`CLAUDE_CLI_AVAILABLE` is `false` → record `Reviewers Skipped: claude CLI unavailable` and review
-inline. The `code_review_slot` sentinel on stdout is a dead slot the same way: record
-`Reviewers Skipped: code-review inner run unavailable (<detail>)` and review inline (diff,
-correctness, naming, error handling, coverage, the contract).
+`CLAUDE_CLI_AVAILABLE` `false`, or the `code_review_slot` sentinel on stdout → record
+`Reviewers Skipped: <reason>` and review inline (diff, correctness, naming, error handling,
+coverage, the contract).
 
 **`--panel`** — launch those sources per `references/review-sources.md` in the turn *before* the
 reviewer call, so they run while it holds the foreground. **Do not wait on them.** Once the
-reviewer's array is in hand, consolidate whichever panel sources have already reported, record
-each one that has not as `Reviewers Skipped: still running`, and go to Step 3.
+reviewer's array is in hand, consolidate whichever have reported, record each one that has not as
+`Reviewers Skipped: still running`, and go to Step 3.
 
 **Never stop a panel source** — the codex run persists a sidecar that
 `references/late-source-reclaim.md` reclaims before the merge, and that reclaim is what makes not
 waiting safe. Not-waiting and not-stopping are separate: #248 removed the quorum rule because it
-*killed* a source that was still working, not because the cycle proceeded without one. Do not
-reintroduce a wait — and never bound one with a `sleep`, which outlives the cycle that started it
-(nine were orphaned on one run).
+*killed* a source still working, not because the cycle proceeded without one. Never bound a wait
+with a `sleep` either — it outlives the cycle that started it (nine were orphaned on one run).
 
 ## Step 3: Consolidate and confirm
 

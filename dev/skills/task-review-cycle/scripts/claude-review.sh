@@ -76,11 +76,14 @@ EOF
 if [ -n "$CONTRACT" ]; then
   PROMPT="${PROMPT}
 
-Then grade the diff against the Sprint Contract below. Judge every acceptance criterion by reading
-the diff. A criterion without evidence of being met is a finding: severity P0, \"source\":\"contract\".
-Hunt for ways the change fails a criterion; record a pass only on evidence. Append contract findings
-to the SAME JSON array as the ${SLOT_ID} findings. Do NOT run the lint/test command named in the
-contract — this session is read-only, and the orchestrator runs that command itself.
+Then grade the diff against the Sprint Contract below. A criterion you can settle by reading the
+diff, and that the diff does not meet, is a finding: severity P0, \"source\":\"contract\". Hunt for
+ways the change fails such a criterion; record a pass only on evidence. A criterion that can only
+be settled by RUNNING something is different: grade it against the \"Lint/test evidence\" line in
+the contract when one is present, and otherwise leave it alone. Never report a criterion as unmet
+merely because this session could not run it — that would block every merge. Append contract
+findings to the SAME JSON array as the ${SLOT_ID} findings. Do NOT run the lint/test command named
+in the contract — this session is read-only, and the orchestrator runs that command itself.
 
 Sprint Contract:
 ${CONTRACT}"
@@ -92,11 +95,15 @@ fi
 # headless session that misreads its task (or trips the target repo's hooks) can
 # create/modify files instead of just reporting findings.
 #
-# Do NOT pass --model: under a non-Claude driver there is no live session to
-# inherit, so the CLI's configured default model is the intended choice.
+# Do NOT pass --model: a headless run has no live session to inherit from, so
+# the CLI's configured default model is the intended choice.
+#
+# stdin comes from a pipe under an agent Bash tool, where the CLI waits 3s for
+# data that never arrives and warns on stderr. Redirect it: the prompt is an
+# argument, so there is nothing to read.
 RAW=""
 status=0
-RAW=$(claude -p --permission-mode plan --output-format json "$PROMPT") || status=$?
+RAW=$(claude -p --permission-mode plan --output-format json "$PROMPT" </dev/null) || status=$?
 if [ "$status" -ne 0 ]; then
   printf '%s\n' "${RAW:-claude CLI exited $status with no stdout}" >&2
   exit "$status"

@@ -636,8 +636,9 @@ def case_malformed_state_is_survivable(tmp: Path, _live: int):
 
 # --- durable result sidecar --------------------------------------------------
 #
-# Why these exist: the caller waits a bounded 1200s for this script, but nothing stops the run when
-# that wait expires — measured across PR #260, #263 and #264, every codex run breached it, and
+# Why these exist: the caller does not wait for this script at all — it moves on when the reviewer
+# returns, and nothing stops this run — measured across PR #260, #263 and #264, every codex run
+# outlasted the cycle, and
 # #260's late output carried two real defects that had to land in a follow-up PR after the merge.
 # The sidecar is what makes a late result reclaimable at all, so its ordering guarantees (meta last,
 # pending carries a probe-able pid) are load-bearing and tested here rather than assumed.

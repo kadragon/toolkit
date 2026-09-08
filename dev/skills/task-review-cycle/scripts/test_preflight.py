@@ -14,9 +14,9 @@ TTL, `--refresh`, `PREFLIGHT_CACHE=0`, and the rule that an errored probe is nev
 
 Two things deliberately survive a cache hit, and both are pinned here because review found them
 missing: the env-derived tool probes (agy/codex/claude CLI/native engine) are re-run and overlaid,
-since a stale `native_engine` decides 2-1's launch path and would silently drop the Claude slot
-from the panel; and the base-branch fast-forward still runs, since the base can move while a 1200s
-review panel waits and a stale local base mis-scopes every later `git diff base...HEAD`.
+since a stale `claude_cli_available` would silently drop the Claude review slot; and the
+base-branch fast-forward still runs, since the base can move while a background review panel runs
+and a stale local base mis-scopes every later `git diff base...HEAD`.
 
 Cache hits are asserted by *counting hub.sh invocations*, not by timing: a served cache makes
 zero calls. The stub hub.sh is resolved by preflight.sh relative to its own directory, so every

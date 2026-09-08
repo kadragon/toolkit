@@ -137,6 +137,19 @@ def case_contract_reaches_prompt(tmp):
         prompt[-400:],
     )
     check("read-only reason given", "this session is read-only" in flat, prompt[-400:])
+    # A read-only reviewer can never gather evidence for "pytest exits 0". Grading its absence as
+    # P0 would make every contract with an execution-based criterion unmergeable, since Step 4
+    # refuses to merge on an open contract finding.
+    check(
+        "execution-based criteria are graded against supplied evidence",
+        "Lint/test evidence" in flat,
+        prompt[-500:],
+    )
+    check(
+        "absence of a run is never itself a finding",
+        "Never report a criterion as unmet merely because this session could not run it" in flat,
+        prompt[-500:],
+    )
 
 
 def case_contract_is_not_executed(tmp):
