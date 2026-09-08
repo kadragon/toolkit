@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- [done] memory-guard: GitLab/Google families, narrower sk-, autoMemoryDirectory stores, char-table sync test (dev v4.9.6) (2026-09-08)
 - [done] prune-backlog warns when a pruned item is still named as somebody else's blocker (dev v4.9.5) (2026-09-06)
 - [done] ci-wait refuses to pass when a configured CI's checks have not registered (dev v4.9.4) (2026-09-06)
 - [done] harness-capture captures observations on the spot into a repo-local note store (dev v4.9.3) (2026-09-06)

@@ -26,8 +26,4 @@ Re-filing requires evidence of the specific kind each item failed on, not a rest
 
 ### PR #254 — memory-guard follow-ups
 
-- [ ] [FEAT] Extend `memory-guard`'s secret families to GitLab (`glpat-`) and Google (`AIza…`) keys — raised in PR #254 review, deferred as out of the Sprint Contract's named families (AWS/GitHub/Slack/npm/provider/PEM)
-- [ ] [HARNESS] Make `memory-guard`'s `FORBIDDEN_CHARS` and `scripts/ci/check_asset_hygiene.py`'s `_forbidden_chars()` provably in sync — the tables are duplicated by design (one ships, one is CI tooling) but nothing detects a future divergence
-- [ ] [FIX] Narrow `memory-guard`'s generic `sk-` provider pattern so hyphenated prose (`sk-8ball-review-checklist-for-the-team…`) stops matching — widening the tail to `[A-Za-z0-9_-]` for `sk-proj-`/`sk-svcacct-` keys traded a false negative for this false positive; a denial costs a rewrite, so it is minor, not free
-- [ ] [FEAT] Have `memory-guard` resolve the configured `autoMemoryDirectory` before its path predicate runs — a store relocated outside `.claude` (documented at `dev/skills/harness-init/references/power-user-settings.md:81`) currently bypasses every check, since `_is_memory_file` requires a `.claude` ancestor
-- [ ] [FEAT] Gate shell-based memory writes in `memory-guard` — the hook matches `Write|Edit` only, so `printf ... > ~/.claude/projects/<slug>/memory/note.md` writes ungated; `commit-guard`'s PreToolUse(Bash) static command analysis is the precedent to follow
+- [ ] [FEAT] Gate shell-based memory writes in `memory-guard` — the hook matches `Write|Edit` only, so `printf ... > ~/.claude/projects/<slug>/memory/note.md` writes ungated; `commit-guard`'s PreToolUse(Bash) static command analysis is the precedent to follow *(deferred: no shell-path memory write has been observed; the other four PR #254 follow-ups shipped without it in PR for 4.9.6 — revisit against a recorded case)*

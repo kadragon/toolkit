@@ -21,8 +21,9 @@ in one place.
 
 Four checks:
   1. Secret patterns — AWS access-key ids, GitHub tokens/PATs, Slack tokens, npm tokens,
-     Anthropic and generic `sk-` provider keys, and PEM private-key headers. Each family
-     carries a length floor so ordinary prose ("the sk- prefix") cannot trip it.
+     GitLab PATs, Google API keys, Anthropic and generic `sk-` provider keys, and PEM
+     private-key headers. Each family carries a length floor (or, for Google, an exact
+     length) so ordinary prose ("the sk- prefix") cannot trip it.
   2. Control and bidirectional formatting characters — C0/C1/DEL, zero-width, bidi marks,
      embeddings, isolates, and the invisible line separators. The table is carried
      deliberately from `scripts/ci/check_asset_hygiene.py` `_forbidden_chars()`, including
@@ -61,6 +62,12 @@ fence: a file missing its closing fence or carrying leading noise is still a fil
 shape read as a fragment and skipped every structure check. The `Write` path and
 `--check-file` see the finished file and are the reliable gate; `harness-capture` runs the
 latter at its show-the-write step for exactly that reason.
+
+Which paths are gated: the default store (`.claude/**/memory/*.md`), plus any directory a
+settings file names in `autoMemoryDirectory` — a store relocated onto a synced volume has no
+`.claude` ancestor and was otherwise invisible to every check. Resolving that setting is the
+one filesystem read on the hook path, and it swallows its own errors so an unreadable
+settings file leaves the predicate at the default rule rather than raising.
 
 Design contract (HOOK PATH ONLY): never-raise, always exit 0 (allow) unless a check fires
 (exit 2). A firing check prints its reasons to stderr and exits 2. Everything else exits 0
@@ -153,26 +160,94 @@ SECRET_PATTERNS = (
     ("Slack token", re.compile(r"\b(?:xox[baprs]|xapp)-[A-Za-z0-9-]{10,}\b")),
     ("npm token", re.compile(r"\bnpm_[A-Za-z0-9]{36,}\b")),
     ("Anthropic API key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b")),
-    # The tail accepts `-` and `_`, not just alphanumerics: today's dominant OpenAI shapes
-    # (`sk-proj-…`, `sk-svcacct-…`) carry a second hyphen, and an alphanumeric-only tail
-    # breaks at it four characters in — well under the floor, so a real key went unmatched.
-    ("provider API key", re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")),
+    ("GitLab personal access token", re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b")),
+    # Fixed length, not a floor: a Google API key is `AIza` plus exactly 35 characters, so
+    # pinning the count is both tighter than a floor and all the shape there is.
+    ("Google API key", re.compile(r"\bAIza[A-Za-z0-9_-]{35}\b")),
+    # Two shapes, deliberately split. A hyphen-bearing tail is accepted only behind a known
+    # OpenAI sub-prefix; the legacy shape carries none, so it is matched alphanumeric-only.
+    # One pattern spanning both (`sk-[A-Za-z0-9_-]{20,}`) matched hyphenated prose —
+    # `sk-8ball-review-checklist-for-the-team-2026` tripped the gate, and a denial costs the
+    # author a rewrite. Split this way that string breaks at its first hyphen, five
+    # characters in, while `sk-proj-…` and `sk-svcacct-…` keys stay matched.
+    ("provider API key", re.compile(r"\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}\b")),
+    ("provider API key", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
     ("PEM private key header", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
 )
 
 
-def _is_memory_file(path: str) -> bool:
-    """True for a markdown file inside a `memory/` directory under a `.claude` ancestor.
+# Settings files that may relocate the store with `autoMemoryDirectory`, documented at
+# `dev/skills/harness-init/references/power-user-settings.md`. Project paths are joined
+# against the payload's cwd; `~` here is the user scope.
+SETTINGS_FILES = (
+    ("~", os.path.join(".claude", "settings.json")),
+    (None, os.path.join(".claude", "settings.json")),
+    (None, os.path.join(".claude", "settings.local.json")),
+)
 
-    Matches `~/.claude/projects/<slug>/memory/foo.md` on both platforms without hardcoding
-    the project slug. Split on both separators: a Windows payload carries backslashes, and
-    a POSIX `pathlib` would read the whole thing as one filename.
+
+def _configured_memory_dirs(cwd: str | None = None) -> tuple[str, ...]:
+    """Absolute directories named by `autoMemoryDirectory` in any settings file we can read.
+
+    A union, not a precedence chain. Reimplementing Claude Code's settings precedence would
+    put a second, drifting copy of that rule here; over-including a directory only widens
+    what a hygiene gate inspects, which is the safe direction to be wrong in.
+
+    This is the only place the hook path touches the filesystem, so it swallows every error
+    and returns what it has: an unreadable or malformed settings file must leave the
+    predicate at its `.claude/**/memory/*.md` behavior rather than break the never-raise
+    contract.
+    """
+    dirs: list[str] = []
+    for scope, rel in SETTINGS_FILES:
+        try:
+            base = os.path.expanduser(scope) if scope else (cwd or "")
+            if not base:
+                continue
+            with open(os.path.join(base, rel), encoding="utf-8") as fh:
+                value = json.load(fh).get("autoMemoryDirectory")
+            if isinstance(value, str) and value.strip():
+                resolved = os.path.abspath(
+                    os.path.expanduser(os.path.expandvars(value.strip()))
+                )
+                if resolved not in dirs:
+                    dirs.append(resolved)
+        except Exception:
+            continue
+    return tuple(dirs)
+
+
+def _under(path: str, directory: str) -> bool:
+    """True when `path` sits inside `directory`. Prefix match, separator-terminated.
+
+    The terminator is what keeps `/x/memory-notes/a.md` out of a store configured at
+    `/x/memory`; `os.path.normcase` carries the platform's case rule rather than assuming
+    POSIX, since a Windows payload reaches the same predicate.
+    """
+    target = os.path.normcase(os.path.abspath(path))
+    root = os.path.normcase(directory).rstrip("\\/") + os.sep
+    return target.startswith(root)
+
+
+def _is_memory_file(path: str, extra_dirs: tuple[str, ...] = ()) -> bool:
+    """True for a markdown file in the auto-memory store.
+
+    Two ways to qualify. The default layout: a `memory/` directory under a `.claude`
+    ancestor, matching `~/.claude/projects/<slug>/memory/foo.md` on both platforms without
+    hardcoding the project slug. Split on both separators — a Windows payload carries
+    backslashes, and a POSIX `pathlib` would read the whole thing as one filename.
+
+    Or the store was relocated with `autoMemoryDirectory` (onto a synced volume, say), in
+    which case it has no `.claude` ancestor and the first rule never fires: any `.md` under
+    a directory in `extra_dirs` is a memory file. Callers pass `_configured_memory_dirs()`.
     """
     if not path:
         return False
     parts = [p for p in re.split(r"[\\/]+", path) if p]
     if not parts or not parts[-1].lower().endswith(".md"):
         return False
+    if any(_under(path, d) for d in extra_dirs):
+        return True
     try:
         mem_idx = len(parts) - 1 - parts[::-1].index("memory")
     except ValueError:
@@ -187,8 +262,13 @@ def _is_index_file(path: str) -> bool:
 
 
 def _scan_secrets(text: str) -> list[str]:
-    """Findings for known credential shapes. The matched value is never echoed back."""
-    return [f"{label} detected" for label, pat in SECRET_PATTERNS if pat.search(text)]
+    """Findings for known credential shapes. The matched value is never echoed back.
+
+    Deduplicated by label: one family may carry more than one pattern (the provider key's
+    prefixed and legacy shapes), and a text tripping both should read as one finding.
+    """
+    findings = [f"{label} detected" for label, pat in SECRET_PATTERNS if pat.search(text)]
+    return list(dict.fromkeys(findings))
 
 
 def _scan_chars(text: str) -> list[str]:
@@ -432,7 +512,7 @@ def main() -> int:
         return 0
     ti = data.get("tool_input", {}) or {}
     path = ti.get("file_path") or ""
-    if not _is_memory_file(path):
+    if not _is_memory_file(path, _configured_memory_dirs(data.get("cwd"))):
         return 0
 
     if tool == "Write":
@@ -521,6 +601,57 @@ def _test() -> None:
     ok("MEMORY.md recognised as index", _is_index_file(mem.replace("note.md", "MEMORY.md")))
     ok("ordinary memory not treated as index", not _is_index_file(mem))
 
+    # --- relocated store (`autoMemoryDirectory`) ---
+    import json as _json
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = os.path.join(tmp, "synced", "memory-store")
+        note = os.path.join(store, "note.md")
+        ok("a relocated store is invisible to the default rule alone", not _is_memory_file(note))
+        ok("naming it makes it a memory file", _is_memory_file(note, (store,)))
+        ok("the default rule still stands beside it", _is_memory_file(mem, (store,)))
+        ok("a sibling sharing the prefix is not inside the store",
+           not _is_memory_file(os.path.join(tmp, "synced", "memory-store-old", "note.md"), (store,)))
+        ok("a non-markdown file in a relocated store does not match",
+           not _is_memory_file(os.path.join(store, "note.json"), (store,)))
+
+        proj = os.path.join(tmp, "proj")
+        os.makedirs(os.path.join(proj, ".claude"))
+        settings = os.path.join(proj, ".claude", "settings.json")
+        with open(settings, "w", encoding="utf-8") as fh:
+            _json.dump({"autoMemoryDirectory": store}, fh)
+        ok("project settings are read", store in _configured_memory_dirs(proj))
+        ok("an absent cwd is not an error — the user scope is still read",
+           isinstance(_configured_memory_dirs(None), tuple)
+           and store not in _configured_memory_dirs(None))
+
+        with open(settings, "w", encoding="utf-8") as fh:
+            fh.write("{ not json")
+        ok("malformed settings fall back to the default rule, never raise",
+           _configured_memory_dirs(proj) == _configured_memory_dirs(os.path.join(tmp, "absent")))
+
+        with open(settings, "w", encoding="utf-8") as fh:
+            _json.dump({"autoMemoryDirectory": "   "}, fh)
+        ok("a blank setting names no directory", store not in _configured_memory_dirs(proj))
+
+        with open(settings, "w", encoding="utf-8") as fh:
+            _json.dump({"autoMemoryDirectory": "~/relocated-memory"}, fh)
+        ok("a `~` path is expanded",
+           os.path.join(os.path.expanduser("~"), "relocated-memory")
+           in _configured_memory_dirs(proj))
+
+        # End to end through the hook: the same secret, in a relocated store, with and
+        # without the setting that puts that store in scope.
+        with open(settings, "w", encoding="utf-8") as fh:
+            _json.dump({"autoMemoryDirectory": store}, fh)
+        secret = "note AKIA" + "Q" * 16 + " here"
+        payload = {"tool_name": "Write", "cwd": proj,
+                   "tool_input": {"file_path": note, "content": secret}}
+        ok("a secret in a relocated store is blocked", hook(payload) == 2)
+        ok("the same write is allowed with no setting naming that store",
+           hook({**payload, "cwd": os.path.join(tmp, "absent")}) == 0)
+
     # --- secret families. Fixtures are assembled at runtime so no complete token
     # literal ever sits in this file for a scanner (or a reader) to mistake for real.
     families = {
@@ -530,9 +661,12 @@ def _test() -> None:
         "Slack": "xoxb-" + "1" * 12,
         "Slack app-level": "xapp-" + "2" * 12,
         "OpenAI project": "sk-proj-" + "g" * 40,
+        "OpenAI service account": "sk-svcacct-" + "h" * 40,
         "npm": "npm_" + "d" * 36,
         "Anthropic": "sk-ant-" + "e" * 30,
         "provider": "sk-" + "f" * 30,
+        "GitLab": "glpat-" + "i" * 20,
+        "Google": "AIza" + "j" * 35,
         "PEM": "-----BEGIN RSA PRIVATE KEY-----",
     }
     for label, fixture in families.items():
@@ -541,6 +675,15 @@ def _test() -> None:
        not _scan_secrets("tokens start with ghp_ or sk-ant- prefixes"))
     ok("short lookalike is not a secret", not _scan_secrets("sk-abc123"))
     ok("clean prose has no secret finding", not _scan_secrets("plain memory body"))
+    # The false positive that split the provider family in two: a hyphenated slug long
+    # enough to clear the floor, whose every hyphen-free run is far too short to be a key.
+    ok("hyphenated sk- prose is not a secret",
+       not _scan_secrets("see sk-8ball-review-checklist-for-the-team-2026 in the notes"))
+    ok("hyphenated glpat- prose is not a secret",
+       not _scan_secrets("the glpat- prefix marks a GitLab token"))
+    ok("AIza short of its exact length is not a secret", not _scan_secrets("AIza" + "j" * 20))
+    ok("one provider finding when both shapes could fire",
+       _scan_secrets("sk-proj-" + "g" * 40).count("provider API key detected") == 1)
 
     # --- characters ---
     ok("bidi override rejected", bool(_scan_chars("a\u202eb")))
