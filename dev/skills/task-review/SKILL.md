@@ -14,7 +14,8 @@ disable-model-invocation: true
 - `--no-hub` — commit locally, review, apply, stop. No push, PR, CI, or merge.
 - `--auto` — skip the consolidation confirmation; apply every in-scope finding.
 - `--pr` / `--lite` — force the PR+CI path or the direct-merge path. Default routes by diff size.
-- `--panel` — add the agy and Codex engines. Auto on a security hit or a 300+ line diff.
+- `--panel` — add the agy and Codex engines. Auto on a security hit, a 300+ line diff, or a diff
+  that adds or changes a shipped script under `dev/`/`prod/`.
 
 Restate the Sprint Contract in the same invocation when the implementation was not yet verified
 against it; the reviewer grades it.
