@@ -47,7 +47,7 @@ MERGE_STRATEGY=$(jq -c '.merge_strategy' <<<"$PREFLIGHT")
 ```
 
 Stop if the bundled scripts cannot be resolved or `has_errors` is `true`. The result is cached per
-branch, so later blocks re-run it for free and read the engine fields they need.
+branch, so later blocks re-run it for free (shell state does not persist) for the fields they need.
 
 ## Step 0: Feature branch
 
@@ -78,12 +78,11 @@ SCRIPT_HIT=$(git diff "${BASE_BRANCH}...HEAD" --name-only --diff-filter=ACMR \
   | grep -E '^(dev|prod)/.*\.(sh|py|ps1|cjs)$' | head -1 || true)
 ```
 
-`SCRIPT_HIT` non-empty → `--panel` is on, whatever path this run takes. It matches on extension
-because a shipped script is where the panel's non-Claude engines earn their slot — quoting, shell
-expansion, and interpreter-shim defects a prose reviewer has no reason to look for (PR #267). It
-sets no path of its own: a small script edit still merges lite, reviewed by three sources. A
-`.md`, `.json`, `.xml` or `.yaml` edit cannot match, so a skill-doc change does not pull the panel
-in.
+`SCRIPT_HIT` non-empty → `--panel` is on, whatever path this run takes, and it sets no path of
+its own (a small script edit still merges lite, reviewed by three sources). It matches on
+extension because a shipped script is where the non-Claude engines earn their slot — quoting,
+shell expansion and interpreter-shim defects a prose reviewer has no reason to look for (PR #267);
+a `.md`/`.json`/`.xml`/`.yaml` edit cannot match, so a skill-doc change does not pull the panel in.
 
 **Route by size** (skip when `--no-hub`, `--lite` or `--pr` was passed):
 
@@ -127,23 +126,15 @@ The script is idempotent: the local commit from above is reused. If `pr_number` 
 
 ## Step 2: Review
 
-**One reviewer, always.** Launch one Agent with `run_in_background: true`, no `subagent_type`,
-no pinned model, with the prompt below. It runs the `code-review` skill and grades the Sprint
-Contract in the same pass. `SECURITY_HIT` non-empty → `EFFORT="high"`, else empty.
+**One reviewer, always.** Launch one Agent with `run_in_background: true`, `name: "reviewer"`
+(the id the close below needs), no `subagent_type`, no pinned model, with the prompt below. It
+runs the `code-review` skill and grades the Sprint Contract in the same pass. `SECURITY_HIT`
+non-empty → `EFFORT="high"`, else empty.
 
-When `NATIVE_ENGINE` is not `claude` (a non-Claude runtime is driving), shell out instead so a
-Claude engine still reviews; skip the slot with `Reviewers Skipped: claude CLI unavailable` when
-`CLAUDE_CLI_AVAILABLE` is `false`:
-
-```bash
-SKILL_DIR="<absolute parent directory of the loaded SKILL.md>"
-[[ -f "$SKILL_DIR/scripts/claude-review.sh" ]] || { echo "Bundled claude-review unavailable: $SKILL_DIR/scripts/claude-review.sh" >&2; exit 1; }
-PREFLIGHT=$(bash "$SKILL_DIR/scripts/preflight.sh")
-BASE_BRANCH=$(jq -r '.base_branch' <<<"$PREFLIGHT")
-EFFORT="<high when SECURITY_HIT is non-empty, else empty>"
-bash "$SKILL_DIR/scripts/claude-review.sh" "${BASE_BRANCH}" "${EFFORT}" \
-  || echo '{"code_review_slot":"inner-run-unavailable","detail":"claude-review.sh exited non-zero"}'
-```
+`NATIVE_ENGINE` not `claude`, or `--panel` — launch those sources per
+`references/review-sources.md`; the panel ones run in the same turn as the reviewer,
+`run_in_background: true`, 1200s each, and a source that fails or breaches is recorded as skipped
+while the cycle proceeds on the rest.
 
 Reviewer prompt:
 
@@ -164,43 +155,15 @@ The sentinel, or a 1200s breach, is a dead slot: record `Reviewers Skipped: code
 unavailable (<detail>)` and review inline (diff, correctness, naming, error handling, coverage,
 the contract). A later corrected array from the same agent supersedes the earlier one.
 
-**`--panel`** — launch these in the same turn as the reviewer, `run_in_background: true`, 1200s
-each; a source that fails or breaches is recorded as skipped and the cycle proceeds on the rest.
-
-```bash
-SKILL_DIR="<absolute parent directory of the loaded SKILL.md>"
-[[ -d "$SKILL_DIR/scripts" ]] || { echo "Bundled scripts unavailable: $SKILL_DIR/scripts" >&2; exit 1; }
-PREFLIGHT=$(bash "$SKILL_DIR/scripts/preflight.sh")
-BASE_BRANCH=$(jq -r '.base_branch' <<<"$PREFLIGHT")
-AGY_AVAILABLE=$(jq -r '.agy_available' <<<"$PREFLIGHT")
-CODEX_AVAILABLE=$(jq -r '.codex_available' <<<"$PREFLIGHT")
-CODEX_MODE=$(jq -r '.codex_mode' <<<"$PREFLIGHT")
-CODEX_COMPANION_PATH=$(jq -r '.codex_companion_path' <<<"$PREFLIGHT")
-[[ "$AGY_AVAILABLE" == "true" ]] && { bash "$SKILL_DIR/scripts/agy-review.sh" "${BASE_BRANCH}" || echo '{"agy_review":"failed"}' >&2; }
-codex_status=0
-if [[ "$CODEX_AVAILABLE" == "true" ]]; then
-  bash "$SKILL_DIR/scripts/codex-review.sh" "${CODEX_MODE}" "${BASE_BRANCH}" "${CODEX_COMPANION_PATH}" || codex_status=$?
-fi
-if [ "$codex_status" -eq 75 ]; then
-  echo '{"codex_review":"locked"}' >&2      # another cycle holds the workspace slot — skipped, not failed
-elif [ "$codex_status" -ne 0 ]; then
-  echo '{"codex_review":"failed"}' >&2
-fi
-```
-
-**Close every slot before Step 3.** Wait for every launched source, then stop it — load
-`TaskStop` with `ToolSearch` `select:TaskStop`. A slot left open is re-prompted on the next wake
-and re-runs its inner `/code-review`, returning the same findings at full token cost, and keeps
-reporting `running` in `ListAgents` long after its last turn (4.9.7 cycle).
-
-| Slot state | Action |
-|------------|--------|
-| Result in hand — by `SendMessage`, the agent's final output, stdout, or the `inner-run-unavailable` sentinel | `TaskStop` it; the channel that delivered does not matter |
-| Breached with nothing delivered — reviewer slot, `claude-review.sh`, `agy-review.sh` | `TaskStop` it: they persist nothing, the inline fallback already stands, and a re-prompt only re-runs the review |
-| Breached codex panel source | **Never stop it.** Its late result on disk is what `references/late-source-reclaim.md` reclaims before merge; no other source persists one |
-
-Never poll a slot with a `sleep` shell — a finished background task notifies on its own, and the
-sleeps outlive the agent (nine were orphaned on the 4.9.7 cycle).
+**Close the reviewer slot before Step 3** (Claude engine only — every shell source above exits
+on its own). Once its array is in hand, whichever channel delivered it (`SendMessage`, the agent's
+final output, or the sentinel), `TaskStop "reviewer"` (`ToolSearch` `select:TaskStop`); stop it on
+a 1200s breach too, since it persists nothing and the inline fallback stands. Left open, it is
+re-prompted on the next wake, re-runs its inner `/code-review` for the same findings at full token
+cost, and keeps reporting `running` in `ListAgents` (4.9.7 cycle). **Never stop the panel task** —
+it carries the codex run whose late result `references/late-source-reclaim.md` reclaims. Never
+bound a wait with a `sleep` shell either: a finished task notifies on its own, a hung one is
+bounded by `Monitor`, and the sleeps outlive the agent (nine were orphaned on the same cycle).
 
 ## Step 3: Consolidate and confirm
 
@@ -216,9 +179,9 @@ Out-of-scope findings go to `backlog.md` under `## Review Backlog` (format in th
 
 Apply approved findings, run the repo's test command (Sprint Contract, else `package.json` /
 `Makefile` / `pyproject.toml` / `go.mod` / `Cargo.toml`). On failure revert that file
-(`git restore --staged <file> && git restore <file>`), report which finding failed, ask.
-A fixed `contract` finding → re-run the reviewer once; still failing → stop, never merge. A fix
-that newly touched another plugin or skill `SKILL.md` → re-run `scripts/bump-version.sh` for it.
+(`git restore --staged <file> && git restore <file>`), report which finding failed, ask. A fixed
+`contract` finding → re-run the reviewer once; still failing → stop, never merge. A fix that newly
+touched another plugin or skill `SKILL.md` → re-run `scripts/bump-version.sh` for it.
 
 **Retrospect (signal-gated).** Only if this cycle surfaced a user correction, a recurring gotcha,
 or a reusable workflow: call the Skill tool with "dev:harness-capture" now, so a light memory or
@@ -279,5 +242,4 @@ bash "$SKILL_DIR/scripts/merge-and-cleanup.sh" <PR_NUMBER> <BASE_BRANCH> <FEATUR
 
 Scripts: `preflight.sh` (probes, cached per branch), `commit-and-push.sh` (stage, guard, commit,
 push, `--pr`; idempotent), `claude-review.sh`, `agy-review.sh`, `codex-review.sh`, `ci-wait.sh`
-(3-strike counter), `ci-failure-logs.sh`, `merge-and-cleanup.sh`, `hub.sh` (GitHub / Forgejo
-adapter the others call).
+(3-strike counter), `ci-failure-logs.sh`, `merge-and-cleanup.sh`, `hub.sh` (hub adapter).
