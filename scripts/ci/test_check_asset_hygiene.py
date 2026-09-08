@@ -23,6 +23,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+
 def _load(name: str, path: Path):
     """Load a module from source text, deliberately bypassing `__pycache__`.
 
