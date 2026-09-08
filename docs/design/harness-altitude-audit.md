@@ -141,7 +141,7 @@ unbounded failure — an objection raised in review (see *Review* below) and acc
 |---|------|:---:|:---:|:---:|---------|
 | 4 | Script the deterministic `task-next`/`task-new` nodes; invoke `bump-version.sh` | — | — | — | **Promote to first.** Not enforcement at all — it *deletes* Axis A prose and moves it to code. This is File-Backed State (+1.6 / +5.5). |
 | 5 | CHANGELOG Entry Contract lint | ✅ | ⚠️ merges fine, wrong forever | ✅ regex | **Keep.** Its real payoff is deleting 6 prose restatements, not the blocking. |
-| 1 | qa-verifier gate on commit | ✅ | ✅ | ⚠️ proxy only | **Keep, descope.** 2.5/3. An evidence file proves *something ran*, not that it was independent, so the hook's acceptance condition must be restated as what it actually checks — "an evidence file exists and matches the current diff" — not "verification was independent". |
+| 1 | qa-verifier gate on commit | ✅ | ✅ | ⚠️ proxy only | **Keep, descope.** 2.5/3. An evidence file proves *something ran*, not that it was independent, so the hook's acceptance condition must be restated as what it actually checks — "an evidence file exists and matches the current diff" — not "verification was independent". **Withdrawn — re-scored ≈0.5/3 and cut; see *Superseded* below.** |
 | 7→2 | Review transport accounting | ❌ **verified, not assumed** | ❌ | ✅ | **Cut, 1/3.** See below. |
 | 8→3a | *Semantic* same-fix detector (C2) | ❌ repeated failure is loud | ❌ bounded within the session | ❌ "same fix attempted" is a judgment call | **Cut, 0/3** — the local-process-layer class that measured negative. |
 | 8→3b | *Numeric* cap on C3 (CI rework 3×) | ⚠️ | ✅ each rework burns CI minutes a re-run does not reclaim | ✅ count `ci-wait.sh` non-zero exits | **Re-file, low priority, 2.5/3.** Split out in review — see below. |
@@ -244,8 +244,8 @@ that script, so `guard.py`'s `_is_git_commit()` sees only the `bash <script>` co
 returns without checking. *Silent* and *Costly* also survive only on `task-next`'s lite
 path — the full cycle gates every commit behind three reviewers, the P0/P1 verifier, and CI before
 merge, which bounds the residual failure and so fails this doc's own "2/3 ships only if the residual
-failure is unbounded" clause. Full reasoning and the re-file bar: `backlog.md` → *Cut — do not
-re-file without new evidence*.
+failure is unbounded" clause. Full reasoning and the re-file bar: *Cut — do not re-file without new
+evidence* below.
 
 That finding also invalidates the second bullet below as written. It was re-filed as a 3/3 `[FIX]`
 and shipped in dev v4.0.33 (`guard.py`'s `--precommit-check` mode, called from
@@ -255,8 +255,20 @@ is an unintended landing (`merge-and-cleanup.sh`'s `--ff-only` runs only after t
 succeeded and merely fast-forwards local `main` onto an already-pushed commit; `task-next`'s lite
 path merges by explicit user opt-in at Step 2.5), and the only opt-out `guard.py` implements is the
 repo-wide allow-main marker that both guards read — so exempting the lite path would also disable
-the branch guard on `git commit`. Full grounds and the re-file bar: `backlog.md` → *Cut — do not
-re-file without new evidence*.
+the branch guard on `git commit`. Full grounds and the re-file bar: *Cut — do not re-file
+without new evidence* below.
+
+## Cut — do not re-file without new evidence
+
+Moved here from `backlog.md` (2026-09-08): a cut item is audit state, not queued work.
+
+Re-filing requires evidence of the specific kind each item failed on, not a restated intuition:
+
+- **commit-guard merge coverage** — cut at ≈1/3 after scoring, which is what the item itself asked for before any build. Both named sites were read, and neither is a mistake to catch. (1) `merge-and-cleanup.sh:86–89` runs its `git merge --ff-only FETCH_HEAD` only inside `if [ "$MERGE_OK" = "true" ]` — the remote PR merge has already landed — and immediately after `git fetch origin "$BASE_BRANCH"`, so it fast-forwards local `main` onto a commit that is already on the remote. It creates no state and pushes nothing; there is nothing there to guard. (2) `task-next`'s lite path merges to `main` **by design**, reached only when the user picks `[1] 라이트 패스` at Step 2.5 — a decision, not the unintended landing the commit guard exists for. (3) Decisive: the only opt-out `guard.py` implements is the repo-wide `<!-- commit-guard: allow-main -->` marker read by `_marker_present`, and both guards consult it. Marking the repo to let the lite path merge would also switch off the branch guard on `git commit` — trading a 3/3 mechanism for a 1/3 one. A separate marker avoids that only by adding a second opt-in surface to maintain. *Silent* and *Costly* therefore rest on a hypothetical third site; only *Decidable* holds outright. Re-file only with a recorded incident where a merge landed on `main` unintentionally — not from either site above.
+- **qa-verifier evidence check (edge #6)** — cut on verified grounds, re-scored from 2.5/3 to ~0.5/3. Three findings, in order of decisiveness. (1) *Decidable fails outright:* the gate cannot fire where the item assumed it would — `task-review` commits through `commit-and-push.sh`, which `commit-guard` did not see at the time this was cut (`docs/design/harness-altitude-audit.md` → *Superseded*, which also records the dev v4.0.33 `--precommit-check` fix that closed it). (2) *Silent and Costly hold only on the lite path:* the full cycle puts every commit through three reviewers, the P0/P1 verifier agent, and CI before merge, so a skipped QA is caught pre-merge and the residual failure is bounded — failing the doc's own "2/3 ships only if the residual failure is unbounded" clause. Only `task-next`'s lite path (direct `merge --no-ff` + push to `main`, no PR, no CI) leaves it unbounded. (3) *The diff match is unworkable even if (1) were fixed:* `task-review` Step 5 commits code edited in Step 4 — review findings applied **after** QA ran — so the evidence hash is stale on every cycle where any finding is applied, and excluding bookkeeping files does not help because these are real code edits. Separately, the gated actor holds the write primitive: an orchestrator with Bash can create the evidence file in one command, so the hook cannot establish even that *something* ran. Re-file only with a recorded cycle where QA was skipped on the lite path and the miss reached `main`.
+- **Review transport accounting (edge #7)** — cut on verified grounds: `task-review/SKILL.md` already distinguishes reviewed-empty from skipped and surfaces both — see its *Collect Reviews* 600s-breach rule, the three "Reviewers Skipped: …" labels, and the reviewer prompt's *"Send the array even when it is empty ([]) so the slot is recorded as reviewed, not stalled"* — and both route to the same action. Re-file only with a recorded cycle where the two states led to *different* correct actions.
+- **Semantic same-fix detector (edge #8, C2)** — failed Decidable. Re-file only with a deterministic predicate (an exact rule over files/exit codes) that does not require judging whether two attempts are "the same fix".
+- **Edges #9, #11, #12** — scored 1.5/3, 0.5/3, 1/3 individually. #9 (assert `tasks.md` has a `status: active` block) was only ever viable as ~3 lines riding inside the edge #6 hook; with #6 cut it has no carrier and does not stand alone at 1.5/3. All three need a recorded failure that escaped the session.
 
 ## What this does not claim
 
