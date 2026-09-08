@@ -23,10 +23,31 @@ import importlib.util
 import sys
 from pathlib import Path
 
+
+def _load(name: str, path: Path):
+    """Load a module from source text, deliberately bypassing `__pycache__`.
+
+    `spec_from_file_location` reads a cached `.pyc` whenever its recorded size and
+    whole-second mtime still match the source — which a one-character edit and its revert
+    both satisfy. That made a real drift check here read stale, so the comparison this file
+    exists to make cannot go through the cache. Compiling the text costs microseconds.
+    """
+    module = importlib.util.module_from_spec(
+        importlib.util.spec_from_loader(name, loader=None)
+    )
+    module.__file__ = str(path)
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), module.__dict__)
+    return module
+
+
 SCRIPT = Path(__file__).parent / "check_asset_hygiene.py"
-spec = importlib.util.spec_from_file_location("check_asset_hygiene", SCRIPT)
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+mod = _load("check_asset_hygiene", SCRIPT)
+
+# The shipped hook that carries a copy of the same table. Loading it here rather than in
+# the hook is the only direction that works: this file runs in the repo, where both paths
+# exist, while the hook runs on a machine that has no `scripts/` at all.
+GUARD = Path(__file__).resolve().parents[2] / "dev" / "hooks" / "memory-guard" / "guard.py"
+guard_mod = _load("memory_guard", GUARD)
 
 PASS = "\033[92mPASS\033[0m"
 FAIL = "\033[91mFAIL\033[0m"
@@ -290,6 +311,23 @@ def main() -> int:
     check(
         "an entirely empty corpus errors once per declared root",
         len(mod.empty_corpus_errors([])) == len(mod.CORPUS_ROOTS),
+    )
+
+    print("\ndev/hooks/memory-guard/guard.py — the duplicated character table stays in sync")
+
+    ours = mod._forbidden_chars()
+    theirs = guard_mod._forbidden_chars()
+    drift = sorted(set(ours) ^ set(theirs))
+    relabelled = sorted(cp for cp in set(ours) & set(theirs) if ours[cp] != theirs[cp])
+    check(
+        "check_asset_hygiene._forbidden_chars() == memory-guard's copy",
+        ours == theirs,
+        "the two tables are duplicated deliberately — the hook ships to machines that never "
+        "receive scripts/ci/, so it cannot import this one — which makes them free to drift "
+        "silently. Reconcile "
+        f"{mod.REPO_ROOT / 'scripts' / 'ci' / 'check_asset_hygiene.py'} and {GUARD}. "
+        f"codepoints in one table only: {[f'U+{cp:04X}' for cp in drift]}; "
+        f"same codepoint, different reason: {[f'U+{cp:04X}' for cp in relabelled]}",
     )
 
     print("\n----")
